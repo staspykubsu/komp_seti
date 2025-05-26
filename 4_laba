@@ -1,0 +1,114 @@
+// 4 laba server
+
+#include <iostream>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <string>
+#include <thread>
+#include <mutex>
+
+#pragma comment (lib, "Ws2_32.lib")
+
+using namespace std;
+
+struct MyData {
+    char username[256];
+    char message[256];
+};
+
+int clientCount = 0;
+mutex clientCountMutex;
+
+void HandleClient(SOCKET clientSocket) {
+    MyData receivedData;
+    int bytesReceived;
+
+    bytesReceived = recv(clientSocket, (char*)&receivedData, sizeof(MyData), 0);
+    if (bytesReceived == SOCKET_ERROR) {
+        cerr << "recv failed with error: " << WSAGetLastError() << endl;
+        closesocket(clientSocket);
+        return;
+    }
+
+    {
+        lock_guard<mutex> lock(clientCountMutex);
+        cout << "Received from client " << clientCount << ":" << endl;
+        cout << "  USERNAME: " << receivedData.username << endl;
+        cout << "  Message: " << receivedData.message << endl;
+    }
+
+
+    send(clientSocket, (char*)&receivedData, sizeof(MyData), 0);
+
+    closesocket(clientSocket);
+    {
+        lock_guard<mutex> lock(clientCountMutex);
+        clientCount--;
+        cout << "Client disconnected.  Number of connected clients: " << clientCount << endl;
+    }
+
+}
+
+int main() {
+    WSADATA wsaData;
+    SOCKET listenSocket, clientSocket;
+    sockaddr_in serverAddr, clientAddr;
+    int clientAddrSize = sizeof(clientAddr);
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        cerr << "WSAStartup failed" << endl;
+        return 1;
+    }
+
+    listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSocket == INVALID_SOCKET) {
+        cerr << "socket failed with error: " << WSAGetLastError() << endl;
+        WSACleanup();
+        return 1;
+    }
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(666);
+
+    if (bind(listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        cerr << "bind failed with error: " << WSAGetLastError() << endl;
+        closesocket(listenSocket);
+        WSACleanup();
+        return 1;
+    }
+
+    if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR) {
+        cerr << "listen failed with error: " << WSAGetLastError() << endl;
+        closesocket(listenSocket);
+        WSACleanup();
+        return 1;
+    }
+
+    cout << "Server listening on port 666..." << endl;
+
+    while (true) {
+        clientSocket = accept(listenSocket, (sockaddr*)&clientAddr, &clientAddrSize);
+        if (clientSocket == INVALID_SOCKET) {
+            cerr << "accept failed with error: " << WSAGetLastError() << endl;
+            closesocket(listenSocket);
+            WSACleanup();
+            return 1;
+        }
+
+        {
+            lock_guard<mutex> lock(clientCountMutex);
+            clientCount++;
+            cout << "Client connected. Number of connected clients: " << clientCount << endl;
+        }
+
+
+        thread clientThread(HandleClient, clientSocket);
+        clientThread.detach();
+    }
+
+    closesocket(listenSocket);
+    WSACleanup();
+
+    return 0;
+}
