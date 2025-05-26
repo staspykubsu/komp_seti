@@ -90,7 +90,7 @@ int main() {
                 << "</head>\n"
                 << "<body>\n"
                 << "<h1>TEST PAGE</h1>\n"
-                << "<p>Alina:)</p>\n"
+                << "<p>Stas Pyatunin :)</p>\n"
                 << "<pre>" << buf << "</pre>\n"
                 << "</body>\n"
                 << "</html>\n";
