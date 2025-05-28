@@ -1,250 +1,202 @@
-﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#include <winsock2.h>
-#include <windows.h>
-#include <string>
-#include <iostream>
-#include <vector>
-#include <map>
-#pragma comment(lib, "ws2_32.lib")
+#define _WINSOCK_DEPRECATED_NO_WARNINGS 
+#include <winsock2.h> 
+#include <windows.h> 
+#include <string> 
+#include <iostream> 
+#pragma comment(lib, "ws2_32.lib") 
+#pragma warning(disable: 4996) 
 using namespace std;
-
-//массив сокетов активных клиентов
-SOCKET Connections[100];
-// число активных клиентов
-int Counter = 0;
-// допустимые типы пакетов
-enum Packet { Pack, Test, Private, UserList, UserConnected, UserDisconnected };
 
 struct ClientInfo {
     SOCKET socket;
-    string name;
+    string nickname;
 };
 
-map<int, ClientInfo> clientInfoMap;
+ClientInfo clients[100];
+int Counter = 0;
 
-/* передача типа, объема и содержания информационного пакета */
-bool SendPacket(SOCKET socket, Packet type, const string& message) {
-    int msg_size = message.size();
+enum Packet {
+    PACKET_MESSAGE,
+    PACKET_NICKNAME,
+    PACKET_JOIN,
+    PACKET_LEAVE,
+    PACKET_PRIVATE
+};
 
-    if (send(socket, (char*)&type, sizeof(Packet), 0) == SOCKET_ERROR)
-        return false;
-
-    if (send(socket, (char*)&msg_size, sizeof(int), 0) == SOCKET_ERROR)
-        return false;
-
-    if (send(socket, message.c_str(), msg_size, 0) == SOCKET_ERROR)
-        return false;
-
-    return true;
-}
-
-void BroadcastUserConnected(const string& username) {
-    for (auto& pair : clientInfoMap) {
-        SendPacket(pair.second.socket, UserConnected, username);
-    }
-}
-
-void BroadcastUserDisconnected(const string& username) {
-    for (auto& pair : clientInfoMap) {
-        SendPacket(pair.second.socket, UserDisconnected, username);
-    }
-}
-
-void BroadcastUserList() {
-    string userList;
-    for (auto& pair : clientInfoMap) {
-        if (!userList.empty()) userList += ",";
-        userList += pair.second.name;
-    }
-    for (auto& pair : clientInfoMap) {
-        SendPacket(pair.second.socket, UserList, userList);
-    }
-}
-
-// функционал потока отдельного клиента
 DWORD WINAPI ServerThread(LPVOID lpParam) {
-
-    Packet packetType;
-    // определение номера сокета клиента
     int index = *(int*)lpParam;
-    cout << "socket number= " << index << endl;
-    SOCKET clientSocket = Connections[index];
-    string clientName = clientInfoMap[index].name;
+    SOCKET clientSocket = clients[index].socket;
+    string nickname = clients[index].nickname;
 
-    // общение с клиентом:
+    setlocale(LC_ALL, "Russian");
+
     while (true) {
-        //получение информации от клиента
-        int result = recv(clientSocket, (char*)&packetType, sizeof(Packet), 0);
-        
-        //сообщение об отключении клиента от сервера
-        if (result <= 0) {
-            cout << "Клиент " << clientName << " покинул чат\n";
-            break;
+        Packet packetType;
+        int bytesReceived = recv(clientSocket, (char*)&packetType, sizeof(Packet), 0);
+
+        if (bytesReceived <= 0) {
+            cout << "Клиент " << nickname << " отключился." << endl;
+
+            for (int i = 0; i < Counter; i++) {
+                if (clients[i].socket != clientSocket) {
+                    Packet leavePacket = PACKET_LEAVE;
+                    send(clients[i].socket, (char*)&leavePacket, sizeof(Packet), 0);
+
+                    int nickSize = nickname.size();
+                    send(clients[i].socket, (char*)&nickSize, sizeof(int), 0);
+                    send(clients[i].socket, nickname.c_str(), nickSize, 0);
+                }
+            }
+
+            for (int i = index; i < Counter - 1; i++) {
+                clients[i] = clients[i + 1];
+            }
+            Counter--;
+
+            closesocket(clientSocket);
+            return 0;
         }
 
-        int msg_size;
-        // определение объема пакета
-        result = recv(clientSocket, (char*)&msg_size, sizeof(int), 0);
-        if (result <= 0) break;
+        if (packetType == PACKET_MESSAGE) {
+            int msg_size;
+            recv(clientSocket, (char*)&msg_size, sizeof(int), 0);
+            char* msg = new char[msg_size + 1];
+            msg[msg_size] = '\0';
+            recv(clientSocket, msg, msg_size, 0);
 
-        /* резервирование буфера нужного размера для принятия пакета */
-        char* msg = new char[msg_size + 1];
-        msg[msg_size] = '\0';
+            cout << nickname << ": " << msg << endl;
 
-        // получение пакета
-        result = recv(clientSocket, msg, msg_size, 0);
-        if (result <= 0) {
+            for (int i = 0; i < Counter; i++) {
+                if (clients[i].socket != clientSocket) {
+                    Packet msgType = PACKET_MESSAGE;
+                    send(clients[i].socket, (char*)&msgType, sizeof(Packet), 0);
+
+                    int nickSize = nickname.size();
+                    send(clients[i].socket, (char*)&nickSize, sizeof(int), 0);
+                    send(clients[i].socket, nickname.c_str(), nickSize, 0);
+
+                    send(clients[i].socket, (char*)&msg_size, sizeof(int), 0);
+                    send(clients[i].socket, msg, msg_size, 0);
+                }
+            }
             delete[] msg;
-            break;
         }
+        else if (packetType == PACKET_PRIVATE) {
+            int targetNickSize;
+            recv(clientSocket, (char*)&targetNickSize, sizeof(int), 0);
+            char* targetNick = new char[targetNickSize + 1];
+            targetNick[targetNickSize] = '\0';
+            recv(clientSocket, targetNick, targetNickSize, 0);
 
-        string message(msg);
-        delete[] msg;
+            int msg_size;
+            recv(clientSocket, (char*)&msg_size, sizeof(int), 0);
+            char* msg = new char[msg_size + 1];
+            msg[msg_size] = '\0';
+            recv(clientSocket, msg, msg_size, 0);
 
-        // определение типа полученного пакета
-        /* if (packettype == Pack) */
-        switch (packetType) {
+            cout << "Приватное от " << nickname << " для " << targetNick << ": " << msg << endl;
 
-        case Pack: {
-            string fullMsg = clientName + ": " + message;
-            for (auto& pair : clientInfoMap) {
-                if (pair.first != index) {
-                    SendPacket(pair.second.socket, Pack, fullMsg);
+            bool found = false;
+            for (int i = 0; i < Counter; i++) {
+                if (clients[i].nickname == string(targetNick)) {
+                    found = true;
+                    Packet privType = PACKET_PRIVATE;
+                    send(clients[i].socket, (char*)&privType, sizeof(Packet), 0);
+
+                    int senderNickSize = nickname.size();
+                    send(clients[i].socket, (char*)&senderNickSize, sizeof(int), 0);
+                    send(clients[i].socket, nickname.c_str(), senderNickSize, 0);
+
+                    send(clients[i].socket, (char*)&msg_size, sizeof(int), 0);
+                    send(clients[i].socket, msg, msg_size, 0);
+                    break;
                 }
             }
-            cout << fullMsg << '\n';
-            break;
-        }
-        case Private: {
-            size_t pos = message.find('|');
-            if (pos != string::npos) {
-                string recipient = message.substr(0, pos);
-                string privateMsg = message.substr(pos + 1);
 
-                bool found = false;
-                for (auto& pair : clientInfoMap) {
-                    if (pair.second.name == recipient) {
-                        string fullMsg = "{Получено личное сообщение от пользователя " + clientName + "}: " + privateMsg;
-                        SendPacket(pair.second.socket, Private, fullMsg);
-                        found = true;
-                        break;
-                    }
-                }
+            if (!found) {
+                string errorMsg = "Пользователь '" + string(targetNick) + "' не найден!";
+                Packet msgType = PACKET_MESSAGE;
+                send(clientSocket, (char*)&msgType, sizeof(Packet), 0);
 
-                string status = found ? "Сообщение отправлено" : "Пользователь " + recipient + " не найден";
-                SendPacket(clientSocket, Private, status);
-                cout << "Приватное сообщение отправлено пользователем" << clientName << " пользователю " << recipient << '\n';
+                int nickSize = 6;
+                send(clientSocket, (char*)&nickSize, sizeof(int), 0);
+                send(clientSocket, "Сервер", nickSize, 0);
+
+                int errorSize = errorMsg.size();
+                send(clientSocket, (char*)&errorSize, sizeof(int), 0);
+                send(clientSocket, errorMsg.c_str(), errorSize, 0);
             }
-            
-            break;
-        }
-                    // получен неопознанный пакет!
-        default:
-            cout << "Unknown packet type: " << packetType << endl;
+
+            delete[] targetNick;
+            delete[] msg;
         }
     }
-
-    closesocket(clientSocket);
-    Connections[index] = 0;
-    clientInfoMap.erase(index);
-    Counter--;
-    BroadcastUserDisconnected(clientName);
-    BroadcastUserList();
-    delete (int*)lpParam;
     return 0;
 }
 
 int main() {
     setlocale(LC_ALL, "Russian");
 
-    // Инициализация Winsock
     WSAData wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        cerr << "WSAStartup failed\n";
+    WORD DLLVersion = MAKEWORD(2, 1);
+    if (WSAStartup(DLLVersion, &wsaData) != 0) {
+        cout << "Ошибка инициализации Winsock" << endl;
         return 1;
     }
 
-    SOCKET sListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sListen == INVALID_SOCKET) {
-        cerr << "Socket creation failed\n";
-        WSACleanup();
-        return 1;
-    }
-
-    /* сохранение в слушающем сокете информации о сервере */
     sockaddr_in addr;
-    addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     addr.sin_port = htons(123);
+    addr.sin_family = AF_INET;
 
-    if (bind(sListen, (SOCKADDR*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        cerr << "Bind failed\n";
-        closesocket(sListen);
-        WSACleanup();
-        return 1;
-    }
-
+    SOCKET sListen = socket(AF_INET, SOCK_STREAM, NULL);
+    bind(sListen, (SOCKADDR*)&addr, sizeof(addr));
     listen(sListen, SOMAXCONN);
-    cout << "Сервер ожидает подключения\n";
 
-    // режим прослушивания, организация очереди
+    cout << "Сервер запущен. Ожидание подключений..." << endl;
+
+    SOCKET newConnection;
+    sockaddr_in clientAddr;
+    int clientAddrSize = sizeof(clientAddr);
+
     while (true) {
-        sockaddr_in clientAddr;
-        int clientAddrSize = sizeof(clientAddr);
-        // извлечение запросов из очереди
-        SOCKET newConnection = accept(sListen, (SOCKADDR*)&clientAddr, &clientAddrSize);
+        newConnection = accept(sListen, (SOCKADDR*)&clientAddr, &clientAddrSize);
 
         if (newConnection == INVALID_SOCKET) {
-            cerr << "Accept failed\n";
+            cout << "Ошибка принятия подключения" << endl;
             continue;
         }
 
         Packet packetType;
-        int bytesReceived = recv(newConnection, (char*)&packetType, sizeof(Packet), 0);
-        if (bytesReceived <= 0 || packetType != Pack) {
-            closesocket(newConnection);
-            continue;
-        }
+        recv(newConnection, (char*)&packetType, sizeof(Packet), 0);
 
-        int nameSize;
-        recv(newConnection, (char*)&nameSize, sizeof(int), 0);
-        char* nameBuffer = new char[nameSize + 1];
-        nameBuffer[nameSize] = '\0';
-        recv(newConnection, nameBuffer, nameSize, 0);
-        string clientName(nameBuffer);
-        delete[] nameBuffer;
+        if (packetType == PACKET_NICKNAME) {
+            int nickSize;
+            recv(newConnection, (char*)&nickSize, sizeof(int), 0);
+            char* nick = new char[nickSize + 1];
+            nick[nickSize] = '\0';
+            recv(newConnection, nick, nickSize, 0);
+            string nickname(nick);
+            delete[] nick;
 
-        int index = -1;
-        for (int i = 0; i < 100; i++) {
-            if (Connections[i] == 0) {
-                index = i;
-                break;
+            clients[Counter].socket = newConnection;
+            clients[Counter].nickname = nickname;
+
+            cout << "Подключился новый клиент: " << nickname << endl;
+
+            for (int i = 0; i < Counter; i++) {
+                Packet joinPacket = PACKET_JOIN;
+                send(clients[i].socket, (char*)&joinPacket, sizeof(Packet), 0);
+
+                int nickSize = nickname.size();
+                send(clients[i].socket, (char*)&nickSize, sizeof(int), 0);
+                send(clients[i].socket, nickname.c_str(), nickSize, 0);
             }
+
+            int clientIndex = Counter;
+            Counter++;
+            CreateThread(NULL, NULL, ServerThread, &clientIndex, NULL, NULL);
         }
-
-        if (index == -1) {
-            SendPacket(newConnection, Pack, "Server is full");
-            closesocket(newConnection);
-            continue;
-        }
-
-
-        /* сохранение сокета клиента в массиве участников чата */
-        Connections[index] = newConnection;
-        ClientInfo clientInfo;
-        clientInfo.socket = newConnection;
-        clientInfo.name = clientName;
-        clientInfoMap[index] = clientInfo;
-        Counter++;
-
-        cout << "Пользователь " << clientName << " присоединился к чату" << endl;
-        SendPacket(newConnection, Pack, "Добро пожаловать в чат, " + clientName + "!");
-
-        BroadcastUserConnected(clientName);
-        BroadcastUserList();
-
-        int* clientIndex = new int(index);
-        CreateThread(NULL, NULL, ServerThread, clientIndex, NULL, NULL);
     }
 
     closesocket(sListen);
