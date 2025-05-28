@@ -1,193 +1,166 @@
-﻿//CLIENT_CHAT
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#include <winsock2.h>
-#include <windows.h>
-#include <string>
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#pragma comment(lib, "ws2_32.lib")
-// #pragma warning(disable: 4996)
+#define _WINSOCK_DEPRECATED_NO_WARNINGS 
+#include <winsock2.h> 
+#include <windows.h> 
+#include <string> 
+#include <iostream> 
+#pragma comment(lib, "ws2_32.lib") 
+#pragma warning(disable: 4996) 
 using namespace std;
 
 SOCKET Connection;
-// типы пакетов
-enum Packet { Pack, Test, Private, UserList, UserConnected, UserDisconnected };
-vector<string> onlineUsers;
 
-/* дополнительный поток клиента для отправки сообщений */
+enum Packet {
+    PACKET_MESSAGE,
+    PACKET_NICKNAME,
+    PACKET_JOIN,
+    PACKET_LEAVE,
+    PACKET_PRIVATE
+};
+
+
 DWORD WINAPI ClientThread(LPVOID lpParam) {
-    SOCKET sock = *(SOCKET*)lpParam;
+    SOCKET clientSocket = *(SOCKET*)lpParam;
     Packet packetType;
 
-    // получение пакетов от сервера
+    setlocale(LC_ALL, "Russian");
+
     while (true) {
-        int result = recv(sock, (char*)&packetType, sizeof(Packet), 0);
-        if (result <= 0) {
-            cout << "Отключение от сервера\n";
+        int bytesReceived = recv(clientSocket, (char*)&packetType, sizeof(Packet), 0);
+
+        if (bytesReceived <= 0) {
+            cout << "Соединение с сервером потеряно." << endl;
             break;
         }
 
-        // определение объема информационного пакета
-        int msg_size;
-        recv(sock, (char*)&msg_size, sizeof(int), 0);
-        char* msg = new char[msg_size + 1];
-        msg[msg_size] = '\0';
-        recv(sock, msg, msg_size, 0);
+        if (packetType == PACKET_MESSAGE) {
+            int nickSize;
+            recv(clientSocket, (char*)&nickSize, sizeof(int), 0);
+            char* nick = new char[nickSize + 1];
+            nick[nickSize] = '\0';
+            recv(clientSocket, nick, nickSize, 0);
 
-        // прием типа пакета
-        /*
-        if (packettype == Pack)
-        {*/
+            int msgSize;
+            recv(clientSocket, (char*)&msgSize, sizeof(int), 0);
+            char* msg = new char[msgSize + 1];
+            msg[msgSize] = '\0';
+            recv(clientSocket, msg, msgSize, 0);
 
-        switch (packetType) {
-        case Pack:
-            cout << msg << endl;
-            break;
-        case Private:
-            cout << msg << endl;
-            break;
-        case UserList: {
-            onlineUsers.clear();
-            string users(msg);
-            size_t pos = 0;
-            while ((pos = users.find(',')) != string::npos) {
-                onlineUsers.push_back(users.substr(0, pos));
-                users.erase(0, pos + 1);
-            }
-            if (!users.empty()) onlineUsers.push_back(users);
-            break;
+            cout << "[" << nick << "]: " << msg << endl;
+
+            delete[] nick;
+            delete[] msg;
         }
-        case UserConnected:
-            cout << "Пользователь " << msg << " присоединился к чату\n";
-            onlineUsers.push_back(msg);
-            break;
-        case UserDisconnected:
-            cout << "Пользователь " << msg << " покинул чат\n";
-            onlineUsers.erase(remove(onlineUsers.begin(), onlineUsers.end(), msg), onlineUsers.end());
-            break;
-        default:
-            cout << "Unknown packet type: " << packetType << endl;
-        }
+        else if (packetType == PACKET_JOIN) {
+            int nickSize;
+            recv(clientSocket, (char*)&nickSize, sizeof(int), 0);
+            char* nick = new char[nickSize + 1];
+            nick[nickSize] = '\0';
+            recv(clientSocket, nick, nickSize, 0);
 
-        delete[] msg;
+            cout << "Пользователь " << nick << " присоединился к чату" << endl;
+            delete[] nick;
+        }
+        else if (packetType == PACKET_LEAVE) {
+            int nickSize;
+            recv(clientSocket, (char*)&nickSize, sizeof(int), 0);
+            char* nick = new char[nickSize + 1];
+            nick[nickSize] = '\0';
+            recv(clientSocket, nick, nickSize, 0);
+
+            cout << "Пользователь " << nick << " покинул чат" << endl;
+            delete[] nick;
+        }
+        else if (packetType == PACKET_PRIVATE) {
+            int nickSize;
+            recv(clientSocket, (char*)&nickSize, sizeof(int), 0);
+            char* nick = new char[nickSize + 1];
+            nick[nickSize] = '\0';
+            recv(clientSocket, nick, nickSize, 0);
+
+            int msgSize;
+            recv(clientSocket, (char*)&msgSize, sizeof(int), 0);
+            char* msg = new char[msgSize + 1];
+            msg[msgSize] = '\0';
+            recv(clientSocket, msg, msgSize, 0);
+
+            cout << "[Приватно от " << nick << "]: " << msg << endl;
+
+            delete[] nick;
+            delete[] msg;
+        }
     }
+    closesocket(clientSocket);
     return 0;
 }
-
-bool SendPacket(Packet type, const string& message) {
-    int msg_size = message.size();
-
-    if (send(Connection, (char*)&type, sizeof(Packet), 0) == SOCKET_ERROR)
-        return false;
-
-    if (send(Connection, (char*)&msg_size, sizeof(int), 0) == SOCKET_ERROR)
-        return false;
-
-    if (send(Connection, message.c_str(), msg_size, 0) == SOCKET_ERROR)
-        return false;
-
-    return true;
-}
-
-/*
-void PrintHelp() {
-    cout << "\nCommands:\n"
-        << "/help - Show this help\n"
-        << "/list - Show online users\n"
-        << "/priv username message - Send private message\n"
-        << "Any other text - Public message\n\n";
-}*/
-
-/*
-void PrintUserList() {
-    int i = 0;
-    cout << "\nАктивные пользователи (" << onlineUsers.size() << "):\n";
-    for (const auto& user : onlineUsers) {
-        cout << i << ") " << user << '\n';
-        i++;
-    }
-    cout << '\n';
-}*/
 
 int main() {
     setlocale(LC_ALL, "Russian");
 
-    cout << "Чтобы написать личное сообщение используйте команду !private <имя пользователя>\nЧтобы просмотреть всех активных пользователей чата используйте команду !online\n";
-
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        cerr << "WSAStartup failed" << endl;
+    WSAData wsaData;
+    WORD DLLVersion = MAKEWORD(2, 1);
+    if (WSAStartup(DLLVersion, &wsaData) != 0) {
+        cout << "Ошибка инициализации Winsock" << endl;
         return 1;
     }
 
-    Connection = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (Connection == INVALID_SOCKET) {
-        cerr << "Socket creation failed" << endl;
-        WSACleanup();
+    sockaddr_in addr;
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_port = htons(123);
+    addr.sin_family = AF_INET;
+
+    Connection = socket(AF_INET, SOCK_STREAM, NULL);
+    if (connect(Connection, (SOCKADDR*)&addr, sizeof(addr)) != 0) {
+        cout << "Ошибка подключения к серверу" << endl;
         return 1;
     }
 
-    sockaddr_in serverAddr;
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    serverAddr.sin_port = htons(123);
+    cout << "Подключено к серверу!" << endl;
+    cout << "Введите ваш ник: ";
 
-    if (connect(Connection, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        cerr << "Connection failed" << endl;
-        closesocket(Connection);
-        WSACleanup();
-        return 1;
-    }
+    string nickname;
+    getline(cin, nickname);
 
-    cout << "Успешное подключение" << endl;
+    Packet nickPacket = PACKET_NICKNAME;
+    send(Connection, (char*)&nickPacket, sizeof(Packet), 0);
 
-    string clientName;
-    cout << "Введите имя, которое будет отображаться для всех пользователей: ";
-    getline(cin, clientName);
-    SendPacket(Pack, clientName);
+    int nickSize = nickname.size();
+    send(Connection, (char*)&nickSize, sizeof(int), 0);
+    send(Connection, nickname.c_str(), nickSize, 0);
 
     CreateThread(NULL, NULL, ClientThread, &Connection, NULL, NULL);
-    //PrintHelp();
-    //cout << "Чтобы написать личное сообщение используйте команду !private <имя пользователя>\nЧтобы просмотреть всех активных пользователей чата используйте команду !online\n";
-    string input;
+
     while (true) {
-        getline(cin, input);
+        string message;
+        getline(cin, message);
 
-        if (input.empty()) continue;
+        if (message.find('/') == 0) {
+            size_t spacePos = message.find(' ');
+            if (spacePos != string::npos) {
+                string targetNick = message.substr(1, spacePos - 1);
+                string privMessage = message.substr(spacePos + 1);
 
-        /*
-        if (input == "/help") {
-            PrintHelp();
-        }*/
-        if (input == "!online") {
-            int i = 0;
-            cout << "\nАктивные пользователи (" << onlineUsers.size() << "):\n";
-            for (const auto& user : onlineUsers) {
-                cout << i << ") " << user << '\n';
-                i++;
-            }
-            cout << '\n';
-        }
-        else if (input.find("!private ") == 0) {
-            size_t space1 = input.find(' ');
-            size_t space2 = input.find(' ', space1 + 1);
+                Packet privPacket = PACKET_PRIVATE;
+                send(Connection, (char*)&privPacket, sizeof(Packet), 0);
 
-            if (space2 != string::npos) {
-                string recipient = input.substr(space1 + 1, space2 - space1 - 1);
-                string message = input.substr(space2 + 1);
-                SendPacket(Private, recipient + "|" + message);
-            }
-            else {
-                cout << "Неправильный формат команды private" << endl;
+                int targetSize = targetNick.size();
+                send(Connection, (char*)&targetSize, sizeof(int), 0);
+                send(Connection, targetNick.c_str(), targetSize, 0);
+
+                int msgSize = privMessage.size();
+                send(Connection, (char*)&msgSize, sizeof(int), 0);
+                send(Connection, privMessage.c_str(), msgSize, 0);
+
+                continue;
             }
         }
-        else {
-            SendPacket(Pack, input);
-        }
+
+        Packet msgPacket = PACKET_MESSAGE;
+        send(Connection, (char*)&msgPacket, sizeof(Packet), 0);
+
+        int msgSize = message.size();
+        send(Connection, (char*)&msgSize, sizeof(int), 0);
+        send(Connection, message.c_str(), msgSize, 0);
     }
 
-    closesocket(Connection);
-    WSACleanup();
     return 0;
 }
